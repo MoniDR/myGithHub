@@ -1,0 +1,127 @@
+---
+title: "PracticalMachineLearning_assignment"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+date: "`r Sys.Date()`"
+author: "Monica DELLA ROSA"
+---
+## Summary of content
+* run a regularized regression with the selected alpha and lambda obtain after cross-validation and perform feature selection
+
+* run a random forest model for classification
+
+* run prediction of test data set
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = T, warning = F, highlight = T, echo = T, message = F)
+```
+
+```{r Initializing session, include=FALSE}
+##the following two lines of code are needed in order for R to find all the packages requested. Eventually, I should probably install the remaining ones in 4.2
+rm(list=ls())
+
+mypath <- c(.libPaths(), "/home/sagemaker-user/R/x86_64-pc-linux-gnu-library/4.1")
+.libPaths(mypath)
+
+pkgs <- c("data.table", "tidyverse", "rio", "GenomicRanges", "plyranges","ComplexHeatmap","DSS", "bsseq","caret", "MLeval", "naniar", "pROC", "RColorBrewer", "progress", "rGREAT") 
+suppressMessages( lapply(pkgs, library, character.only = TRUE) )
+
+work.dir <- "/home/sagemaker-user/miscellaneous/" 
+if(getwd() != work.dir){ 
+ setwd(work.dir) 
+ } 
+getwd() 
+
+rm(pkgs)
+rm(work.dir)
+rm(mypath)
+
+training <- fread("/home/sagemaker-user/miscellaneous/pml-training.csv")
+testing <- fread("/home/sagemaker-user/miscellaneous/pml-testing.csv")
+```
+
+## Initial exploration of the data
+
+**outcome: "classe"**
+
+In the first instance I will visualize the training data set to get an idea of how the data looks and if there's anything outstanding about it. Specifically, I will check:
+
+* presence of missing data
+* filter out variables with missing data from training dataset
+
+```{r}
+colnames(training)
+dim(training)
+
+table(training$classe)
+table(is.na(training[,-"classe"])) #TRUE
+
+##excluding the variables for which there's no available data
+# Identify columns containing only NAs
+columns1 <- which(colSums(is.na(training)) == 0)
+columns2 <- which(colSums(is.na(testing)) == 0)
+# Remove columns containing only NAs
+training <- training[, ..columns1]
+testing <- testing[, ..columns2]
+
+table(colnames(training) %in% colnames(testing))
+
+trainData <- training[, -c(1:7)]
+testData <- testing[, -c(1:7)]
+
+```
+
+## Feature selection
+
+After excluding those features for which there wasn't any observation available, the final training data set is made up of 154 potential predictors. In order to select the most important predictors to then build the final model, I will proceed with a regularized model to assess and perform feature selection.
+
+
+```{r}
+
+cv.glmnet <- glmnet::cv.glmnet(as.matrix(trainData[,-"classe"]), trainData$classe, nfolds = 5, family = "multinomial")
+plot(cv.glmnet)
+
+NonZero <- coef(cv.glmnet)
+coef.table <- data.table()
+coef.table <- cbind(A =as.matrix(NonZero$A),
+                 B = as.matrix(NonZero$B),
+                 C = as.matrix(NonZero$C),
+                 D = as.matrix(NonZero$D),
+                 E = as.matrix(NonZero$E)
+                )
+
+featureNames <- rownames(coef.table[rowSums(coef.table == 0) != 0,])
+training.final <- setDT(trainData)[, ..featureNames]
+training.final$classe <- as.factor(trainData$classe)
+```
+
+## Random Forest Classification 
+
+```{r}
+myCtrl <- caret::trainControl(method = "cv", 
+                              number = 3,
+                              allowParallel = TRUE)
+
+mod.fit <- caret::train(classe ~ .,
+                         method = "rf",
+                         data = training.final,
+                         trControl = myCtrl)
+print(mod.fit)
+mod.fit$finalModel
+
+confMtx <- confusionMatrix(mod.fit)
+
+testing.final <- as.data.frame(testData)[,colnames(testData) %in% colnames(training.final)]
+
+predict(mod.fit$finalModel, testing.final)
+
+```
+
+## **SUMMARY**
+
+The lasso model was run for feature selection and identified **53** features that are importantly related to the definition of the classe variable. 
+
+The Random Forest model had an **ACCURACY = 99%** and and **Out-of-Bag error = 0.4**
